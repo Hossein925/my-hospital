@@ -1,5 +1,7 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import jsPDF from 'jspdf';
+import html2canvas from 'html2canvas';
 import { Department, StaffMember, SkillCategory, Assessment, NamedChecklistTemplate, ExamTemplate, Question, QuestionType, ExamSubmission, ExamAnswer, UserRole, MonthlyTraining, TrainingMaterial, NewsBanner } from '../types';
 import { generateImprovementPlan } from '../services/geminiService';
 import SkillCategoryDisplay from './SkillCategoryDisplay';
@@ -77,6 +79,8 @@ const StaffMemberView: React.FC<StaffMemberViewProps> = ({
   const [supervisorMessage, setSupervisorMessage] = useState('');
   const [managerMessage, setManagerMessage] = useState('');
   const [isChecklistModalOpen, setIsChecklistModalOpen] = useState(false);
+  const [isPrinting, setIsPrinting] = useState(false);
+  const reportRef = useRef<HTMLDivElement>(null);
 
   const [viewMode, setViewMode] = useState<ViewMode>('month_selection');
   const [assessmentSubView, setAssessmentSubView] = useState<AssessmentResultView>('details');
@@ -178,6 +182,62 @@ const StaffMemberView: React.FC<StaffMemberViewProps> = ({
         managerMessage
     });
     alert('پیام ها با موفقیت ذخیره شدند.');
+  };
+
+  const handlePrintToPdf = async () => {
+    if (!reportRef.current || !selectedMonth) return;
+
+    setIsPrinting(true);
+
+    try {
+        const doc = new jsPDF();
+
+        // Load font
+        const fontResponse = await fetch("https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/fonts/ttf/Vazirmatn-Regular.ttf");
+        const fontBlob = await fontResponse.blob();
+        const reader = new FileReader();
+        const fontDataURL = await new Promise<string>((resolve, reject) => {
+            reader.onloadend = () => resolve(reader.result as string);
+            reader.onerror = reject;
+            reader.readAsDataURL(fontBlob);
+        });
+        const fontBase64 = fontDataURL.split(',')[1];
+
+        doc.addFileToVFS('Vazirmatn-Regular.ttf', fontBase64);
+        doc.addFont('Vazirmatn-Regular.ttf', 'Vazirmatn', 'normal');
+        doc.setFont('Vazirmatn');
+
+        const pageWidth = doc.internal.pageSize.getWidth();
+        doc.text(`گزارش ارزیابی ماه: ${selectedMonth}`, pageWidth - 15, 20, { align: 'right' });
+        doc.text(`نام پرسنل: ${staffMember.name}`, pageWidth - 15, 30, { align: 'right' });
+
+
+        const canvas = await html2canvas(reportRef.current, {
+            scale: 2,
+            useCORS: true,
+            backgroundColor: '#ffffff',
+        });
+
+        const imgData = canvas.toDataURL('image/png');
+        const imgProps = doc.getImageProperties(imgData);
+        const pdfWidth = pageWidth - 30; // with some margin
+        const pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
+
+        let position = 40;
+        if (position + pdfHeight > doc.internal.pageSize.getHeight()) {
+            doc.addPage();
+            position = 15;
+        }
+
+        doc.addImage(imgData, 'PNG', 15, position, pdfWidth, pdfHeight);
+
+        doc.save(`assessment-${staffMember.name}-${selectedMonth}.pdf`);
+    } catch (error) {
+        console.error("Error generating PDF:", error);
+        alert("خطا در ایجاد فایل PDF. لطفا دوباره تلاش کنید.");
+    } finally {
+        setIsPrinting(false);
+    }
   };
   
   const handleMonthSelect = (month: string) => {
@@ -423,20 +483,55 @@ const StaffMemberView: React.FC<StaffMemberViewProps> = ({
                     <ChartBarIcon className="w-5 h-5" />
                     مشاهده نتایج و برنامه پیشنهادی
                 </button>
+                <button
+                    onClick={handlePrintToPdf}
+                    className="inline-flex items-center gap-2 px-4 py-2 font-semibold text-white bg-orange-600 rounded-lg hover:bg-orange-700 disabled:opacity-50 disabled:cursor-wait"
+                    disabled={isPrinting}
+                >
+                    <PdfIcon className="w-5 h-5" />
+                    {isPrinting ? 'در حال ایجاد...' : 'خروجی PDF'}
+                </button>
             </div>
         </div>
-        <h2 className="text-2xl font-bold mb-4">جزئیات ارزیابی در <span className="text-indigo-600 dark:text-indigo-400">{selectedMonth}</span></h2>
-        {assessment.skillCategories.map((category) => (
-          <SkillCategoryDisplay
-            key={category.name}
-            category={category}
-            maxPossibleScore={assessment.maxScore}
-          />
-        ))}
+        <div ref={reportRef} className="bg-white p-6 rounded-lg">
+            <h2 className="text-2xl font-bold mb-4 text-slate-800">جزئیات ارزیابی در <span className="text-indigo-600">{selectedMonth}</span></h2>
+            {assessment.skillCategories.map((category) => (
+            <SkillCategoryDisplay
+                key={category.name}
+                category={category}
+                maxPossibleScore={assessment.maxScore}
+            />
+            ))}
+
+            {userRole !== UserRole.Staff && (
+                <div className="mt-8 bg-slate-50 border border-slate-200 rounded-lg p-6">
+                    <h3 className="text-xl font-bold mb-4 text-slate-800">پیام‌های مدیریتی</h3>
+                    <div className="space-y-4">
+                        <div>
+                            <label htmlFor="supervisorMessage_print" className="block text-sm font-medium text-slate-700 mb-1">
+                                پیام سوپروایزر آموزشی
+                            </label>
+                            <div className="p-3 bg-slate-100 rounded-md min-h-[100px] text-slate-700 text-sm">
+                                {supervisorMessage || "پیامی ثبت نشده است."}
+                            </div>
+                        </div>
+                        <div>
+                            <label htmlFor="managerMessage_print" className="block text-sm font-medium text-slate-700 mb-1">
+                                پیام مسئول بخش
+                            </label>
+                             <div className="p-3 bg-slate-100 rounded-md min-h-[100px] text-slate-700 text-sm">
+                                {managerMessage || "پیامی ثبت نشده است."}
+                            </div>
+                        </div>
+                    </div>
+                     {/* The editable textareas are below, outside the printable ref */}
+                </div>
+            )}
+        </div>
 
         {userRole !== UserRole.Staff && (
             <div className="mt-8 bg-white dark:bg-slate-800 rounded-lg shadow-md p-6">
-                <h3 className="text-xl font-bold mb-4">پیام‌های مدیریتی</h3>
+                <h3 className="text-xl font-bold mb-4">ثبت / ویرایش پیام‌های مدیریتی</h3>
                 <p className="text-slate-500 dark:text-slate-400 mb-6">در این بخش می‌توانید بازخورد خود را برای این ارزیابی ثبت کنید. این پیام‌ها در برنامه بهبود پیشنهادی نیز نمایش داده خواهند شد.</p>
                 <div className="space-y-4">
                     <div>
